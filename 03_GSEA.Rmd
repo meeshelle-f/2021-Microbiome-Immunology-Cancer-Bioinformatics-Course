@@ -1,0 +1,233 @@
+# Pathway Annotation
+
+```{r, basics_load pathways}
+#Click RDS files for MSigDB Version 7.1 at http://bioinf.wehi.edu.au/MSigDB/index.html
+#Download Mm.h.all.v7.1.entrez.rds, I moved into GitHub file folder. Upload 
+Mm.H = readRDS("~/GitHub/2021-mic/Mm.h.all.v7.1.entrez.rds")
+head(names(Mm.H))
+head(Mm.H$HALLMARK_ADIPOGENESIS)
+```
+
+```{r, basics_convert gene annotations}
+library(biomaRt)
+
+mart=useEnsembl('ENSEMBL_MART_ENSEMBL') # list ensembl dataset
+listDatasets(mart)[1:5,]
+
+listEnsemblArchives() #set Ensembl dataset
+listEnsembl(version=104) 
+
+ensembl104=useEnsembl(biomart="genes", dataset="mmusculus_gene_ensembl", version=104)
+attr=listAttributes(ensembl104)
+dim(attr)
+attr[1:5,]
+filt= listFilters(ensembl104)
+dim(filt)
+filt[1:5,]
+
+#get the gene list 
+gene.map=getBM(attributes = c('entrezgene_id', 'ensembl_gene_id'), filter = 'entrezgene_id', values=Mm.H$HALLMARK_ADIPOGENESIS, mart=ensembl104)
+length(Mm.H$HALLMARK_ADIPOGENESIS)
+dim(gene.map) #notice dim doesnt match, gene.map is missing two genes 
+
+idx=match(Mm.H$HALLMARK_ADIPOGENESIS,gene.map$entrezgene_id)
+sum(is.na(idx)) #2 
+idx=na.omit(idx) 
+head(Mm.H$HALLMARK_ADIPOGENESIS)
+head(gene.map[idx,]) #should have same order as the original vector of entrez gene ids
+
+```
+
+Now, following the basics described above ^, repeat with our data: 
+```{r}
+library(DESeq2)
+library(ashr)
+library(ggplot2)
+library(tidyverse)
+BiocManager::install("fgsea")
+library(fgsea)
+library(rtracklayer)
+library(stringr)
+library(biomaRt)
+
+#data description. Mice cell line experiments performed with 2 experimental factors (2 by 2 factorial design). There are 3 mice per cell line, so n=12. 
+#Treatment (anti-PD-1 vs control)
+#Cell line (UV2 vs parental)
+# we will focus on gene level analyses on three analyses: 1) GSEA for testing the treatment effect in the two factor additive model. 2) GSEA for testing the treatment by cell line interaction. 3) GSEA for testing the treatment effect within each of the two cell lines. 
+
+```
+
+```{r}
+PRJNA668393ddsData = readRDS("~/GitHub/2021-mic/PRJNA668393-ddsdata.RDS")
+dds=PRJNA668393ddsData
+dds
+meta.dat= colData(dds)%>% as.data.frame
+head(meta.dat)
+table(meta.dat[,c("cline","trt")])
+design(dds)
+
+```
+
+```{r single gene analysis for testing the treatment effect in the two factor additive model}
+
+design(dds)= formula(~cline+trt) # create DDS object using design 
+dds.fit= DESeq(dds) # DEseq2  contains 3 steps, 1) estimate size factors 2) finalize dispersion estimates, 3) perform generalized linear model fitting for each gene 
+
+#use contrasts to compare 2 groups. there are 2 ways to do this: 
+#contrast=c("condition", "level_to_compare", "base_level")
+#results(dds.fit,contrast=contrast, alpha=alpha_threshold)
+
+contrast_trt=c("trt", "antiPD1", "isotype")
+res_add=results(dds.fit,contrast=contrast_trt)
+head(res_add)
+
+#LFC shrinkage is optional 
+res_add_shrunken=lfcShrink(dds.fit, contrast=contrast_trt, res=res_add, type="ashr")
+
+#MA plot shows mean of normalized counts vs log2FC. Genes that are sig DE are colored. 
+plotMA(res_add, ylim=c(-2,2))
+plotMA(res_add_shrunken, ylim=c(-2,2))
+
+summary(res_add)
+summary(res_add_shrunken)
+
+head(res_add)
+```
+
+```{r GSEA based on stats obtained from single gene analysis}
+#rank genes and remove genes that are NA 
+ranks=res_add$stat
+ens=as.character(rownames(res_add))
+head(ens)
+ens2=str_split(ens, pattern=coll("."),simplify=TRUE)[,1]
+head(ens2)   #notice they are rounded. 
+
+idx=which(!is.na(ranks))
+ranks=ranks[idx] #reduced down 
+head(ranks)
+ens3=ens2[idx]
+length(ens3) #28406
+length(ranks) #28406
+
+barplot(sort(ranks,decreasing=T)) # plot ranked FC
+```
+
+```{r map gene annotations}
+ensembl104= useEnsembl(biomart="genes", dataset="mmusculus_gene_ensembl",version=104)
+gene.map=getBM(attributes=c('entrezgene_id','ensembl_gene_id'),filter= 'ensembl_gene_id', values= ens3, mart=ensembl104)
+dim(gene.map)
+head(gene.map)
+idx=match(ens3, gene.map[,2])
+length(idx)
+sum(is.na(idx))
+
+gene.map2=gene.map[idx,]
+head(ens3)
+head(gene.map2)
+
+entrez=gene.map2[,1] 
+entrez[is.na(entrez)] = "NA" #change NA to string
+names(ranks)=entrez #assign names to the rank vector 
+head(ranks)
+
+set.seed(1234)
+fgseaRes=fgsea(Mm.H, ranks, minSize=15, maxSize=500) #perform GSEA. 
+head(fgseaRes[order(padj, -abs(NES)),],n=10) # look at top 10 results 
+
+plotEnrichment(Mm.H[["HALLMARK_ESTROGEN_RESPONSE_EARLY"]], ranks) #not sig
+plotEnrichment(Mm.H[["HALLMARK_E2F_TARGETS"]],ranks) #sig
+
+#plotGseaTable allows us to plot a summary figure showing the results for multiple pathways 
+topUp =fgseaRes%>%filter(ES>0)%>%top_n(10,wt=-padj)
+topDown =fgseaRes%>%filter(ES<0)%>%top_n(10,wt=-padj)
+topPathways = bind_rows(topUp, topDown)%>% arrange(-ES)
+plot.new()
+plotGseaTable(Mm.H[topPathways$pathway], ranks, fgseaRes, gseaParam=.5)
+#must run all at same time to generate plot
+
+
+```
+
+```{r GSEA for testing the treatment by cell line interaction}
+design(dds)= formula(~cline+trt +cline:trt ) #update dds object 
+dds.fit=DESeq(dds)
+
+res_int=results(dds.fit) #check results of DESeq2 fitting 
+head(res_int)
+
+ranks=res_int$stat #extract stats
+ens=as.character(rownames(res_int))
+head(ens)
+ens2=str_split(ens, pattern=coll("."), simplify=TRUE)[,1]
+head(ens2)
+
+idx=which(!is.na(ranks))
+ranks=ranks[idx]
+head(ranks)
+
+ens3=ens2[idx]
+length(ens3)
+length(ranks)
+
+#map gene annotations again 
+ensembl104= useEnsembl(biomart="genes", dataset="mmusculus_gene_ensembl",version=104)
+gene.map=getBM(attributes=c('entrezgene_id','ensembl_gene_id'),filter= 'ensembl_gene_id', values= ens3, mart=ensembl104
+               )
+idx=match(ens3, gene.map[,2])
+length(idx)
+sum(is.na(idx))
+
+gene.map2=gene.map[idx,]
+head(ens3)
+head(gene.map2)
+
+entrez=gene.map2[,1]
+entrez[is.na(entrez)]="NA"
+names(ranks)=entrez
+head(ranks)
+
+gene.map2=gene.map[idx,]
+head(ens3)
+head(gene.map2)
+
+entrez=gene.map2[,1] 
+entrez[is.na(entrez)] = "NA" #change NA to string
+names(ranks)=entrez #assign names to the rank vector 
+head(ranks)
+
+fgseaRes=fgsea(Mm.H, ranks, minSize=15, maxSize=500) #perform GSEA. 
+head(fgseaRes[order(padj, -abs(NES)),],n=10) # look at top 10 results 
+
+plotEnrichment(Mm.H[["HALLMARK_MITOTIC_SPINDLE"]], ranks) 
+
+#plotGseaTable allows us to plot a summary figure showing the results for multiple pathways 
+topUp =fgseaRes%>%filter(ES>0)%>%top_n(10,wt=-padj)
+topDown =fgseaRes%>%filter(ES<0)%>%top_n(10,wt=-padj)
+topPathways = bind_rows(topUp, topDown)%>% arrange(-ES)
+plot.new()
+plotGseaTable(Mm.H[topPathways$pathway], ranks, fgseaRes, gseaParam=.5)
+#must run all at same time to generate plot
+
+
+
+
+```
+
+```{r GSEA for testing treatment effect within each of 2 cell lines}
+mod_mat=model.matrix(design(dds), colData(dds)) #define model matrix 
+mod_mat
+
+head(meta.dat) #extract data in the cell line "Parental"
+table(meta.dat[,c("trt", "cline")])
+parental.isotype=colMeans(mod_mat[(dds$cline == "Parental")&(dds$trt=="isotype"),])
+parental.antipd1=colMeans(mod_mat[(dds$cline == "Parental")&(dds$trt=="antiPD1"),])
+
+#alternative way to specify contrast and extract estimator of effect size 
+res_trt_pa=results(dds.fit,contrast = parental.antipd1 - parental.isotype)
+plot(res_trt_pa$log2FoldChange)
+plotMA(res_trt_pa)
+head(res_trt_pa)
+
+# finish HMWK: 
+
+```

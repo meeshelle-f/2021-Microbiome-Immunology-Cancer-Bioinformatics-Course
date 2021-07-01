@@ -1,0 +1,390 @@
+ DESeq2
+
+```{r, intro packages}
+
+#Notice the file being uploaded here ends in ddsdata.RDS, whereas the ddsDE file that was newly saved is ddsData!!!! It has no RDS at the end!!
+
+library(tidyverse)
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("DESeq2")
+library(DESeq2)
+
+PRJNA668393ddsData = readRDS("~/GitHub/2021-mic/PRJNA668393-ddsdata.RDS") #dds, not qc. 
+
+PRJNA668393ddsData
+
+class(PRJNA668393ddsData)
+
+#DESeqDataSet is an S4 object. An S4 object was taught when introducing bioconductor. Note that S4 objects allow users to wrap up multiple elements into a single variables where each element is called a slot.
+
+slotNames(PRJNA668393ddsData) #return individual slot info 
+
+```
+
+Goals: 
+1. Calculate scaling factors for each sample using DESeq2 / normalize data 
+2. Use DESeq2 on the normalized data, define independent variables (cell line, treatment)
+3. Volcano plots for cell line and treatment effects
+
+```{r metadata}
+#access the metadata (columnData), stored in slot `colData`
+
+SummarizedExperiment::colData(PRJNA668393ddsData) %>% as.data.frame
+#12 rows, Run, Experiment, SampleName, cell line, treat, rep, cell_line_long, treat_long)
+
+SummarizedExperiment(colData(PRJNA668393ddsData))
+
+#The design formula is stored in the slot `design`. The design holds the R formula which expresses how the counts depend on the variables in colData. We have specified any predictor values, so this currently looks like an intercept-only model.
+
+DESeq2::design(PRJNA668393ddsData)
+
+```
+```{r practice with imported raw counts}
+
+#'DESeq2::counts` extracts matrix of counts (with genes as rows and samples as columns). 
+dim(DESeq2::counts(PRJNA668393ddsData)) # [1] 55416    12
+
+head(DESeq2::counts(PRJNA668393ddsData),3)
+
+#This slot is empty, but it will be important soon. This is where dispersion estimates for variation in read counts per gene will go, i.e. dispersion parameter $\alpha_i$ (notation below).
+
+dispersionFunction(PRJNA668393ddsData)
+
+# This slot is also empty, but it too will be important soon. This is where sample-specific size factors will go, ie 𝑠𝑗  is the sample 𝑗 specific size factor (notation below). A size factor is a normalization constant used to account for the fact that samples can have very different library sizes
+
+sizeFactors(PRJNA668393ddsData)
+#NULL
+```
+```{r design lm}
+
+#Recall linear model (lm) has form "response ~ fixedeffect1 + fixedeffect2".
+
+ddsobj <- PRJNA668393ddsData
+ddsobj$cline # cell line, fixed effect 1
+ddsobj$treatment # control treatment isotype or anti-PD-1, fixed effect 2
+
+#does cell line and treatment have an effect on differential gene expression response? 
+#Add design to DESeq2 object. 
+library(DESeq2)
+design(ddsobj) <- formula(~ cline + trt)
+design(ddsobj) #stored formula
+
+# Size Factors -  We begin by estimating the size factors for each sample 
+ddsobj <- DESeq2::estimateSizeFactors(ddsobj)
+
+ddsobj
+
+#Note that there is a **sizeFactor** added to **colData**. Let's look at it more carefully
+#You can also get the size factors directly
+
+tibble::tibble(sfactor = sizeFactors(ddsobj)) # use tibble for better formatting 
+
+#Summarize size factors
+summary(DESeq2::sizeFactors(ddsobj))
+
+#Now that the size factors have been estimated, we can get "normalized" read counts. Remember that DESeq2 normalizes against size factor.
+
+DESeq2::counts(ddsobj)[102:104,c(3,11)] # original counts for three genes for samples 3 and 11
+
+DESeq2::sizeFactors(ddsobj)[c(3,11)] # Size factors for samples 3 and 11. Notice that we will divide the raw data gene counts by the size factor that was generated for each sample.  
+
+#> 495/.71388 = 693.3938
+DESeq2::counts(ddsobj, normalize = TRUE)[102:104, c(3,11)] # normalized count for samples 3 and 11
+
+DESeq2::counts(ddsobj)[102:104, 3] / DESeq2::sizeFactors(ddsobj)[3] # normalized manually using size factors for sample 3
+
+DESeq2::counts(ddsobj)[102:104, 11] / DESeq2::sizeFactors(ddsobj)[11] # normalized manually using size factors for sample 11
+
+```
+```{r, extract raw & normalized counts for specific genes and samples}
+
+counts(ddsobj, normalize = FALSE)[c("ENSMUSG00000061024.9", "ENSMUSG00000079671.9"),c("SRR12804465","SRR12804467")]
+
+counts(ddsobj, normalize = TRUE)[c("ENSMUSG00000061024.9", "ENSMUSG00000079671.9"),c("SRR12804465","SRR12804467")]
+
+# Dispersion Parameters - Next, we get the dispersion factors for each gene 
+
+ddsobj <- estimateDispersions(ddsobj)
+
+ddsobj
+#Note that the dispersionFunction slot is now populated.
+
+dispersionFunction(ddsobj)
+
+#The dispersion function slot holds the fitted model used to estimate gene-specific dispersion. alpha is the dispersion parameter. We can extract the gene specific dispersion factors using dispersions(). 
+
+alphas <- dispersions(ddsobj)
+alphas[1:10]
+
+#Verify that the number of dispersion factors equals the number of genes
+
+length(alphas) # number of disperion factors
+
+summary(alphas)#Summarize dispersion factors using box plot (may log transform)
+
+boxplot(log(dispersions(ddsobj)))
+```
+```{r, create ddsDE}
+# Differential Expression Analysis
+#We can now conduct a differential expression analysis using the DESeq() function. Keep in mind that to get to this step, we 1) first estimated the size factors for each sample and then the 2) dispersion parameters for each gene.
+
+ddsDE <- DESeq2::DESeq(ddsobj) # Carry out DE analysis
+ddsDE # Look at object
+
+DESeq2::results(ddsDE) # Look at results
+
+DESeq2::results(ddsDE, tidy = TRUE) %>% # Look at results (tidy version sorted by adjusted P-value)
+
+    dplyr::arrange(padj) %>%
+        head(10)
+```
+```{r, contrasts}
+# DE with respect to treatment using isotype as the referent
+# (positive effect size suggests that treatment up-regulates GOI)
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype")) #55416 rows, 6 cols
+
+
+# DE with respect to treatment using anti-PD-1 as the referent 
+# (negative effect size suggests that treatment up-regulates GOI)
+DESeq2::results(ddsDE, contrast = c("trt", "isotype", "antiPD1"))
+```
+```{r, contrasts with tidy and arranged p values}
+# Tidy the results
+#Effect of treatment (trt) using "isotype" as the reference
+
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype"), tidy = TRUE) %>% 
+    dplyr::arrange(padj) %>%
+        head(10)
+
+### DE effect with respect to cell line using "Parental" as the reference
+### Tidy the results
+DESeq2::results(ddsDE, contrast = c("cline", "UV2", "Parental"), tidy = TRUE) %>% 
+    dplyr::arrange(padj) %>%
+        head(10)
+```
+```{r, extract and interpret coefficient estimates}
+# results for top hit (gene with lowest p-value) for treatment DE shown below
+
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype"), tidy = TRUE) %>%
+    dplyr::filter(row == "ENSMUSG00000110537.2")
+
+#This output only provides the estimate for the treatment effect for this gene. We can get the estimates for the intercept and the cell line effect by: 
+
+coef(ddsDE, se = TRUE)["ENSMUSG00000110537.2", , drop = FALSE]
+```
+
+## Visualize DE effect & top two hits
+Looking at the results for these two genes: 
+* The estimated log2FC for "ENSMUSG00000110537.2" is negative. We will verify visually that treatment is associated with lower expression
+* The estimated log2FC for "ENSMUSG00000022564.8" is positive. We will verify visually that treatment is associated with higher expression
+
+```{r, plotCounts of 2 genes}
+DESeq2::plotCounts(ddsobj, "ENSMUSG00000110537.2", intgroup = "trt", normalized = TRUE)
+
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype"), tidy = TRUE) %>%
+    dplyr::filter(row == "ENSMUSG00000110537.2")
+
+DESeq2::plotCounts(ddsobj, "ENSMUSG00000022564.8", intgroup = "trt", normalized = TRUE)
+
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype"), tidy = TRUE) %>%
+    dplyr::filter(row == "ENSMUSG00000022564.8")
+```
+
+DESeq2::plotCounts() is a convenient function for visualizing differential expression effects. The following example illustrates how one could customize the figure
+
+```{r, myinteractplot}
+myinteractplot <- function(mydds, geneid) {
+    
+    SummarizedExperiment::assay(mydds) %>%
+        tibble::as_tibble(rownames="gene") %>%
+            dplyr::filter(gene == geneid) %>%
+                tidyr::gather(Run, value, -gene) %>%
+                    dplyr::select(-gene) -> 
+                        expdat
+    
+    SummarizedExperiment::colData(mydds) %>%
+        as.data.frame %>%
+            tibble::as_tibble() %>%
+                dplyr::full_join(expdat, by = "Run") -> 
+                    genedat
+    
+    genedat %>%
+        ggplot2::ggplot(aes(x = trt, y = value/sizeFactor, color = cline)) +
+            ggplot2::geom_point() + 
+                ggplot2::xlab("Treatment") + ggplot2::ylab(paste(geneid, "(normalized count)")) +
+                ggplot2::scale_colour_manual(name = "", values = c("red3", "blue3")) +
+                    ggplot2::theme_bw()
+    }
+
+myinteractplot(ddsobj, "ENSMUSG00000110537.2")
+
+myinteractplot(ddsobj, "ENSMUSG00000022564.8")
+```
+
+```{r, Volcano plots}
+### Volcano plot for treatment effect
+DESeq2::results(ddsDE, contrast = c("trt", "antiPD1", "isotype"), tidy = TRUE) %>%
+    dplyr::filter(!is.na(pvalue)) %>%
+        ggplot2::ggplot(aes(x = log2FoldChange, y = -log10(pvalue))) + 
+            ggplot2::geom_point() + 
+                ggplot2::theme_bw()
+
+### Volcano plot for cell line effect
+DESeq2::results(ddsDE, contrast = c("cline", "UV2", "Parental"), tidy = TRUE) %>%
+    dplyr::filter(!is.na(pvalue)) %>%
+        ggplot2::ggplot(aes(x = log2FoldChange, y = -log10(pvalue))) + 
+            ggplot2::geom_point() + 
+                ggplot2::theme_bw()
+# Save results
+
+saveRDS(ddsDE, "PRJNA668393ddsData")
+
+sessionInfo()
+```
+
+
+
+Below repeats DESeq2, but for interaction analysis. 
+
+```{r, specify lm for interaction}
+
+PRJNA668393ddsData = readRDS("~/GitHub/2021-mic/PRJNA668393-ddsdata.RDS")
+ddsobj <- PRJNA668393ddsData
+
+
+design(ddsobj) <- formula(~ cline + trt + cline:trt) #notice cell line + treatment interaction effects 
+
+design(ddsobj)
+
+```
+
+
+```{r, 1_estimating size factors}
+ddsobj <- estimateSizeFactors(ddsobj)
+
+ddsobj
+
+#Note that there is a **sizeFactor** added to **colData**. Let's look at it more carefully
+#You can also get the size factors directly
+
+tibble::tibble(sfactor = sizeFactors(ddsobj))
+
+summary(sizeFactors(ddsobj)) # Summarize size factors
+
+```
+
+Now that the size factors have been estimated, we can get "normalized" counts (DESeq2 normalizes against size factor)
+
+```{r, 2_Dispersion Parameters}
+ddsobj <- estimateDispersions(ddsobj)#get the dispersion factors 
+
+# inspect the dds object again and note that the rowRanges slot has extra information 
+alphas <- dispersions(ddsobj)
+
+summary(alphas)#Verify that the number of dispersion factors equals the number of genes
+
+boxplot(log(dispersions(ddsobj))) #Summarize the dispersion factors using a box plot (may want to log transform)
+
+```
+
+
+We can now conduct a differential expression analysis using the DESeq() function. Keep in mind that to get to this step, we first estimated the size factors and then the dispersion parameters.
+
+```{r, create ddsDE}
+ddsDE <- DESeq2::DESeq(ddsobj) # Carry out interaction analysis
+
+ddsDE
+
+DESeq2::resultsNames(ddsDE)
+
+DESeq2::results(ddsDE)
+
+DESeq2::results(ddsDE, tidy = TRUE) %>% # tidy version sorted by adjusted P-value
+    dplyr::arrange(padj) %>%
+        head(10)
+```
+
+```{r, Extract coefficient estimates}
+#The results for two genes are shown below
+
+DESeq2::results(ddsDE, tidy = TRUE) %>%
+    dplyr::filter(row %in% c("ENSMUSG00000022351.15","ENSMUSG00000025964.16"))
+
+coef(ddsDE)[ c("ENSMUSG00000022351.15","ENSMUSG00000025964.16"), ]
+
+
+dds1 <- ddsobj
+dds1$group <- as.factor(paste0(dds1$trt,dds1$cline))
+SummarizedExperiment::colData(dds1)%>% data.frame%>%dplyr::select(Run, trt, cline,group)
+
+```
+
+```{r}
+DESeq2::design(dds1) <- ~ group
+dds1mod <- DESeq2::DESeq(dds1)
+
+results(dds1mod)
+
+DESeq2::resultsNames(dds1mod) # instead of 2 factors with two levels each, we now have 1 factor with 4 levels
+
+DESeq2::results(dds1mod, tidy = TRUE, contrast = c("group","antiPD1Parental","isotypeParental")) %>% 
+    dplyr::filter(row %in% c("ENSMUSG00000022351.15")) # Examine the treatment effect given the parental cell line
+
+```
+
+```{r}
+# Examine the treatment effect given the UV2 cell line
+DESeq2::results(dds1mod, tidy = TRUE, contrast = c("group","antiPD1UV2","isotypeUV2")) %>%
+    dplyr::filter(row %in% c("ENSMUSG00000022351.15"))
+
+# Now, go back to the first design and pull out the effect of treatment on given the UV2 cell line
+# **I don't really understand how this contrast list differs from how contrasts are specified above**
+# the version above is much more intuitive than how this is written to me
+# These are the same effect sizes and pvals
+DESeq2::results(ddsDE, tidy = TRUE, contrast = list(c("trt_antiPD1_vs_isotype", "clineUV2.trtantiPD1"))) %>%
+    dplyr::filter(row %in% c("ENSMUSG00000022351.15"))
+
+resultsNames(ddsDE)
+```
+
+```{r, myinteractplot}
+myinteractplot <- function(mydds, geneid) {
+    
+    SummarizedExperiment::assay(mydds) %>%
+        tibble::as_tibble(rownames="gene") %>%
+            dplyr::filter(gene == geneid) %>%
+                tidyr::gather(Run, value, -gene) %>%
+                    dplyr::select(-gene) -> 
+                        expdat
+    
+    SummarizedExperiment::colData(mydds) %>%
+        as.data.frame %>%
+            tibble::as_tibble() %>%
+                dplyr::full_join(expdat, by = "Run") -> 
+                    genedat
+    
+    genedat %>%
+        ggplot2::ggplot(aes(x = cline, y = value/sizeFactor, color = trt)) +
+            ggplot2::geom_point() + 
+                ggplot2::xlab("Cell line") + ggplot2::ylab(paste(geneid, "(normalized count)")) +
+                ggplot2::scale_colour_manual(name = "", values = c("red3", "blue3")) +
+                    ggplot2::theme_bw()
+    }
+
+myinteractplot(ddsobj, "ENSMUSG00000022351.15")
+
+myinteractplot(ddsobj, "ENSMUSG00000025964.16")
+```
+
+```{r, Volcano plot}
+#for treatment effect
+DESeq2::results(ddsDE, tidy = TRUE) %>%
+    dplyr::filter(!is.na(pvalue)) %>%
+        ggplot2::ggplot(aes(x = log2FoldChange, y = -log10(pvalue))) + 
+            ggplot2::geom_point() + 
+                ggplot2::theme_bw()
+
+sessionInfo()
+```

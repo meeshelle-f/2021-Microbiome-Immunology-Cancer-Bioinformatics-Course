@@ -1,0 +1,105 @@
+QC plots mapping metrics
+
+```{r Import Counts}
+
+library(tidyverse)
+
+#pull data from GitHub file. note that variables are columns
+
+PRJNA668393qcData=readRDS("~/GitHub/2021-mic/PRJNA668393-qcdata.RDS")
+PRJNA668393qcData
+
+```
+
+```{r ggplot}
+
+library(dplyr)
+library(ggplot2)
+
+# Visualize proportion of mapped reads
+
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped)) + 
+    ggplot2::geom_point()
+
+```
+
+```{r, themes}
+
+#add a theme 
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped)) + 
+    ggplot2::geom_point() +
+    ggplot2::theme_bw() +
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#define common theme
+mytheme <- theme_bw() + ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Annotate treatment information with colors
+# Plot colors associated with anti-PD-1 and isotype 
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped, col = treatment)) + 
+    ggplot2::geom_point() + 
+    mytheme
+
+#plot treatment colors & cell line levels with shapes
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped, col = treatment, shape = cell_line)) + 
+    ggplot2::geom_point() + 
+    mytheme
+
+#plot treatment colors,  cell line levels with shapes with additional customizations
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped, col = treatment, shape = cell_line)) +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::labs(col = "Treatment") +
+    ggplot2::labs(shape = "Cell Line") +
+    ggplot2::xlab("Run Label") + 
+    ggplot2::ylab("Total reads (depth)") +
+    ggplot2::scale_colour_manual(values = c("red3", "blue3", "green3")) +
+    mytheme
+
+
+#Variation of the previous figure where the legends have been combined
+PRJNA668393qcData %>%
+    dplyr::mutate(grouplab = factor(paste(cell_line, treatment, sep = ", "))) %>%
+    ggplot2::ggplot(aes(x = Run, y = prop.mapped, col = grouplab, shape = grouplab)) +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::scale_colour_manual(name = "Cell Line, Treatment", values=c("blue3","red3","blue3","red3")) +   
+    ggplot2::scale_shape_manual(name = "Cell Line, Treatment", values=c(19, 19, 17, 17)) +
+    ggplot2::xlab("Run Label") + 
+    ggplot2::ylab("Proportion of Uniquely Mapped Reads") +
+    mytheme
+    
+# Visualize depth
+
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = depth)) +
+    ggplot2::geom_point(size = 3) +
+    mytheme
+
+# notice UV2 cell lines are sequenced at higher depth
+
+PRJNA668393qcData %>%
+    ggplot2::ggplot(aes(x = Run, y = depth, col = treatment, shape = cell_line)) +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::labs(col = "Treatment") +
+    ggplot2::labs(shape = "Cell Line") +
+    ggplot2::xlab("Run Label") + 
+    ggplot2::ylab("Total reads (depth)") +
+    ggplot2::scale_colour_manual(values = c("red3", "blue3", "green3")) +
+    mytheme
+
+# Visualize proportion of uniquely mapped reads with facets
+
+PRJNA668393qcData %>% ggplot(aes(x=Run, y=prop.mapped, shape =cell_line, color=treatment))+
+    ggplot2::geom_point(size = 3) +
+    ggplot2::labs(col = "Treatment") +
+    ggplot2::labs(shape = "Cell Line") +
+    ggplot2::scale_colour_manual(values = c("red3", "blue3", "green3")) +
+    ggplot2::facet_grid(treatment~ cell_line, drop=TRUE, scales="free_x", space="free") +
+    mytheme
+
+sessionInfo()
+```
